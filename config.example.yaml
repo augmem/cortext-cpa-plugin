@@ -1,0 +1,32 @@
+# Snippet for CLIProxyAPI config.yaml
+#
+# Copy the plugins section into your CLIProxyAPI config (or merge keys).
+# Build and install the shared library first:
+#   make build            # stub engine
+#   make build-native     # real libcortext (needs CORTEXT_ROOT)
+#   make install PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
+
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    cortext:
+      enabled: true
+      # Isolation: session | agent | global
+      memory_scope: session
+      # Per-scope SQLite directory
+      data_dir: "~/.cli-proxy-api/cortext"
+      # Cortext knobs (OpenClaw/Hermes defaults)
+      focus: 0.45
+      sensitivity: 0.5
+      stability: 0.5
+      recall_limit: 12
+      ingest_assistant: true
+      ingest_reasoning: true
+      # Stage mid-stream recall for the *next* request (no mid-turn revise).
+      interrupt_gate: true
+      auto_consolidate: true
+      # Optional hybrid window: keep last N non-system messages outbound.
+      window_messages: 0
+      session_header: "X-Cortext-Session"
+      agent_header: "X-Cortext-Agent"

@@ -1,0 +1,36 @@
+# Build artifacts
+bin/
+dist/
+*.so
+*.dylib
+*.dll
+*.a
+*.o
+*.out
+
+# Go
+plugin/vendor/
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# Local config / state
+config.yaml
+*.sqlite
+*.sqlite-*
+.cortext/
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Cortext native drop-ins (large; document how to fetch)
+vendor/darwin-*/
+vendor/linux-*/
+vendor/windows-*/
+vendor/models/
+!vendor/README.md
