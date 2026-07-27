@@ -1,155 +1,53 @@
-# Cortext for CLIProxyAPI
+# cortext-cpa-plugin
 
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds
+[Cortext](https://github.com/augmem/cortext) memory to proxied LLM traffic.
+It implements CPA's three interceptor hooks:
 
-Living memory for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) —
-the same Cortext loop as
-[`@augmem/cortext-openclaw-plugin`](https://github.com/augmem/cortext-openclaw-plugin)
-and [`cortext-hermes-plugin`](https://github.com/augmem/cortext-hermes-plugin),
-wired through CPA’s **plugin interceptors** so every client protocol and every
-upstream provider gets memory without forking the proxy.
+- `request.intercept_before` — ingest new turns, recall relevant memory, inject
+  it into the system/instructions field as a fenced `<cortext_memory>` block.
+- `response.intercept_after` — ingest the assistant's reply.
+- `response.intercept_stream_chunk` — same for streamed replies, plus an
+  optional interrupt gate that stages recall for the next request (a plain
+  HTTP proxy can't revise mid-generation).
 
-```text
-client (OpenAI / Claude / Gemini / Responses / …)
-        │
-        ▼
-  CLIProxyAPI  ── request interceptor ──► durable ingest + live recall inject
-        │
-        ▼
-  upstream provider (Kimi / Claude / Codex / Gemini / xAI / …)
-        │
-        ▼
-  response / stream interceptors ──► durable assistant (+ optional gate)
-```
-
-## Why a plugin (not a fork)
-
-CLIProxyAPI already exposes:
-
-| Capability | Method | Cortext use |
-|---|---|---|
-| `request_interceptor` | `request.intercept_before` | Ingest new messages, recall, inject `<cortext_memory>` |
-| `response_interceptor` | `response.intercept_after` | Durable-ingest assistant text |
-| `response_stream_interceptor` | `response.intercept_stream_chunk` | Stream ingest + interrupt staging |
-
-Those hooks run on the shared `ExecuteWithAuthManager` path for **all** entry
-protocols. Provider executors and translators stay untouched, so you can keep
-`CLIProxyAPI` on stock upstream and only drop this `.so` / `.dylib` into
-`plugins/`.
-
-## The loop
-
-1. **Request (before auth)** — extract messages from the *client* format,
-   durable-ingest unseen turns (deduped; clients resend full history), run
-   ephemeral recall on the latest user text, inject a fenced memory block into
-   system / instructions, optionally window the outbound transcript.
-2. **Response / stream** — durable-ingest assistant (and optional reasoning)
-   text.
-3. **Interrupt gate** — on stream segments, ephemeral recall may stage memory
-   for the **next** request. A pure HTTP proxy cannot revise mid-generation the
-   way OpenClaw’s `before_agent_finalize` can.
-
-## Supported client formats
-
-| `SourceFormat` | Extract | Inject |
-|---|---|---|
-| `openai` | `messages[]` | system message |
-| `openai-response` / `codex` | `instructions` + `input` | `instructions` |
-| `claude` | `system` + `messages[]` | `system` |
-| `gemini` / `antigravity` | `systemInstruction` + `contents` | `systemInstruction.parts` |
-
-(`antigravity` is defensive: no client route emits it in the pinned CPA
-v7.2.96; the Gemini-family handling covers it if a future host does.
-`interactions` is deliberately NOT handled: CPA's interactions wire shapes —
-`system_instruction`, `steps[]` responses, `event_type` stream events — do
-not match any adapter, so interactions traffic passes through untouched
-rather than being half-rewritten.)
-
-Upstream provider choice is irrelevant: memory is applied on the client body
-before translation.
-
-## Session isolation (multi-tenant)
-
-One SQLite file per scope key:
-
-| `memory_scope` | Key |
-|---|---|
-| `session` (default) | Explicit session (`X-Cortext-Session` / `X-Session-Id` / body `conversation_id`) is **namespaced by API-key hash** when an API key is present: `s-<keyHash>-<session>`. Same `conversation_id` under two keys ⇒ two stores. Unkeyed hosts use `s-anon-<session>`. No session → agent/API-key bucket. **Identity-less** (no session, agent, or API key) does **not** open a durable store. `previous_response_id` chains resolve to the scope that produced that response (bound to the same API key). |
-| `agent` | `X-Cortext-Agent` namespaced by API key when present; key-only bucket if no agent header. |
-| `global` | single shared store (**single-user only** — leaks across tenants on a multi-tenant proxy) |
-
-Send a stable session header from your client when you can:
-
-```http
-X-Cortext-Session: my-conversation-id
-```
+Because these hooks run for every client protocol CPA serves, one `.so`/`.dylib`
+covers OpenAI, Claude, Gemini, and Responses-API clients without touching CPA
+itself. Sibling projects:
+[cortext-openclaw-plugin](https://github.com/augmem/cortext-openclaw-plugin),
+[cortext-hermes-plugin](https://github.com/augmem/cortext-hermes-plugin).
 
 ## Build
 
-Requirements: Go 1.26+ (see `plugin/go.mod`), CGO (for `-buildmode=c-shared` only).
-
-The committed `plugin/go.mod` resolves **published** modules only (no sibling
-`replace` directives). `plugin/go.sum` carries checksums for
-`github.com/augmem/cortext.go` and `github.com/router-for-me/CLIProxyAPI/v7`.
+Requires Go 1.26+; CGO only for `-buildmode=c-shared`.
 
 ```bash
-# Protocol + stub engine (no native assets) — unit tests / CPA wiring only
-make test
-make build-stub
-# → bin/cortext-stub.dylib  (macOS) or bin/cortext-stub.so (Linux)
-# engine=stub — NOT production Cortext quality
+make test          # unit tests (in-process stub engine)
+make build-stub    # bin/cortext-stub.* — CI/protocol use, not real retrieval
 
-# Production engine: github.com/augmem/cortext.go (pure-Go; downloads
-# release natives + AIST on first open unless CORTEXT_ASSETS_DIR is set)
-make build-native
-make test-native
-# → bin/cortext.dylib / bin/cortext.so  (production basename)
-# registration Version: 0.1.0+native
+make build-native  # bin/cortext.* — production, real Cortext engine
+make test-native   # native-tagged tests (downloads release assets on first open)
 ```
 
-### Local development (optional sibling checkouts)
+The production build links [`github.com/augmem/cortext.go`](https://github.com/augmem/cortext.go),
+which downloads the release natives + model assets on first engine open. For
+offline installs set `CORTEXT_ASSETS_DIR` (see [PROVENANCE.md](./PROVENANCE.md)).
+
+`plugin/go.mod` has no `replace` directives; a clean clone builds from the
+module proxy. For local development against sibling checkouts,
+`cp go.work.example go.work` (gitignored).
+
+## Install
 
 ```bash
-cp go.work.example go.work   # gitignored; points at ../cortext-proxy and ../cortext.go
-```
-
-## Install into CLIProxyAPI
-
-```bash
-# Production (documented default)
 make build-native
-# optional offline assets (skip download on first open):
-#   export CORTEXT_ASSETS_DIR=/path/to/unpacked/cortext-assets-1.2.4
 make install-native PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
-# → plugins/cortext.dylib  (or .so) with engine=native
-
-# Stub for protocol experiments only (different basename)
-make build-stub
-make install-stub PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
-# → plugins/cortext-stub.* — does not replace production cortext.*
 ```
 
-`make install` without a suffix **exits with an error** so the stub cannot be
-accidentally shipped under the production plugin id.
-
-Provenance notes for native artifacts: [`PROVENANCE.md`](./PROVENANCE.md).
-
-### Live ABI smoke (no upstream provider required)
-
-Loads the real `cliproxy_plugin_init` entrypoint the same way CPA does:
-
-```bash
-# Protocol-only ABI against the stub artifact
-make build-stub
-cd bench/abi_live && go run . -plugin ../../bin/cortext-stub.dylib -out /tmp/cpa-live-stub
-
-# Release-grade ABI against the native production artifact
-make build-native
-cd bench/abi_live && go run . -plugin ../../bin/cortext.dylib -out /tmp/cpa-live
-# summary.json: multi-format inject, isolation, durability
-```
-
-In `config.yaml` (see [`config.example.yaml`](./config.example.yaml)):
+`make install-stub` exists for protocol experiments and installs under a
+separate `cortext-stub` basename. Plain `make install` refuses to run so the
+stub can't end up in production by accident. Then configure CPA (see
+[config.example.yaml](./config.example.yaml)):
 
 ```yaml
 plugins:
@@ -160,133 +58,119 @@ plugins:
       enabled: true
       memory_scope: session
       data_dir: "~/.cli-proxy-api/cortext"
-      focus: 0.45
-      stability: 0.5
       recall_limit: 12
-      # CoT is not persisted unless opted in (default: false).
-      # ingest_reasoning: true
-      # Consolidate when the engine asks (consolidation_state hint), with an
-      # every-N-writes fallback; attempts throttled to ≤1 per N/5 writes.
+      # ingest_reasoning: true  # opt-in; chain-of-thought is not persisted by default
       auto_consolidate: true
       consolidate_every: 25
 ```
 
-Plugin id is the library basename (`cortext`), matching `plugins.configs.cortext`.
-Registration reports `Version: 0.1.0+native` (or `+stub`) so the linked engine
-is visible at the host surface.
+The plugin id is the library basename (`cortext`). Registration reports
+`Version: 0.1.0+native` (or `+stub`) so you can tell which engine is linked.
 
-### Operator contracts
+## Isolation
 
-- **Config changes** to `data_dir`, `memory_scope`, engine knobs
-  (`focus` / `sensitivity` / `stability`), or the identity headers dispose
-  open engines so the next request reopens with the new settings. The
-  in-memory `previous_response_id`
-  map is process-local and is cleared on material reconfigure and process
-  restart — clients should send an explicit session header after restart.
-- **Fail-open**: interceptor errors pass the request/response through without
-  memory so the proxy stays available. Counters
-  (`open_fail`, `process_fail`, `inject_fail`, `skip_no_identity`,
-  `scope_evict`, `stream_evict`, `stream_conflict`, `chain_fallback`,
-  `consolidate_fail`) are logged with running
-  totals; watch logs for growth.
-- **data_dir** is created mode `0700`. Place it on a private volume.
+One SQLite store per scope. With `memory_scope: session` (default), the scope
+key is `s-<apiKeyHash>-<sessionHash>` when the client presents an API key, so
+the same `conversation_id` from two tenants gets two stores. Unkeyed traffic
+uses `s-anon-*` buckets; requests with no session, agent, or API-key identity
+get no durable store at all. `previous_response_id` chains resolve to the
+scope that produced the referenced response, and only for the same API key.
+`memory_scope: agent` keys on the agent header instead. `memory_scope: global`
+is one shared store — single-user deployments only.
 
-### LLM-as-judge eval
+Send a session header when you can:
 
-```bash
-# Requires JUDGE_API_KEY or OPENAI_API_KEY (or XAI_API_KEY)
-cd bench/judge_eval && go run . -plugin ../../bin/cortext.dylib -out ./out
-# writes summary.json; exits 2 with judges_blocked.txt if credentials missing
+```http
+X-Cortext-Session: my-conversation-id
 ```
 
-### Blackbox e2e (live CPA + real providers)
+The host must forward client `Authorization` / `x-api-key` and session headers
+in intercept metadata. If CPA strips auth before the plugin, tenants collapse
+into the unkeyed `s-anon-*` buckets.
 
-Load the **native** plugin into a **running** CPA, then:
+## Client formats
+
+- `openai` — `messages[]`, inject into the first system message
+- `openai-response` / `codex` — `instructions` + `input`, inject into `instructions`
+- `claude` — `system` + `messages[]`, inject into `system`
+- `gemini` / `antigravity` — `systemInstruction` + `contents`, inject into
+  `systemInstruction.parts` (`antigravity` is defensive; no client route emits
+  it in the pinned CPA v7.2.96)
+
+`interactions` is deliberately not handled: CPA's interactions wire shapes
+(`system_instruction`, `steps[]` responses, `event_type` stream events) match
+no adapter here, so that traffic passes through untouched instead of being
+half-rewritten. Upstream provider choice doesn't matter — memory is applied to
+the client body before translation.
+
+## Bench
+
+`bench/` has the live harnesses and [VERDICT.md](./bench/VERDICT.md), the
+scrutiny entrypoint: what was tested, what passed, what's still unproven.
+Live outputs are gitignored (they embed operator paths); regenerate with the
+commands in VERDICT.md.
 
 ```bash
-make build-native
-mkdir -p ~/.cli-proxy-api/plugins ~/.cli-proxy-api/cortext
-cp bin/cortext.dylib ~/.cli-proxy-api/plugins/
-# enable plugins.configs.cortext in /opt/homebrew/etc/cliproxyapi.conf (or your config)
-brew services restart cliproxyapi
+# ABI smoke, no provider needed — loads the real cliproxy_plugin_init
+cd bench/abi_live && go run . -plugin ../../bin/cortext.dylib -out /tmp/cpa-live
 
+# Blackbox e2e against a running CPA with the native plugin installed
 make e2e-blackbox CPA_BASE=http://127.0.0.1:8317 CPA_MODEL=kimi-k2.7-code
-# → bench/e2e_blackbox/out/summary.json  (plugin store + recall + isolation)
-```
 
-Optional drivers (once the CLI is pointed at CPA): `--driver agy` / `--driver kimi`
-(see [`bench/e2e_blackbox/README.md`](./bench/e2e_blackbox/README.md)).
+# LLM-judge A/B (needs JUDGE_API_KEY or OPENAI_API_KEY)
+python3 bench/judge_eval/live_ab.py --base http://127.0.0.1:8317/v1 --key <cpa-key> --out bench/judge_eval/out
+```
 
 ## Layout
 
 ```text
-cortext-cpa-plugin/
-  plugin/           # Go c-shared plugin (package main)
-    main.go         # C ABI + method dispatch
-    intercept.go    # request / response / stream handlers
-    formats.go      # OpenAI / Claude / Gemini / Responses adapters
-    store.go        # per-scope engines + ingest dedupe + tenant isolation
-    engine_*.go     # stub (default) or cortext_native
-    memory.go       # fence, neutralize, format
-    metrics.go      # fail-open counters
-    config.go
-  vendor/           # optional dropped-in libcortext (see vendor/README.md)
-  config.example.yaml
-  Makefile
+plugin/           Go c-shared plugin (package main)
+  main.go         C ABI + method dispatch
+  intercept.go    request / response / stream handlers
+  formats.go      per-format extract/inject/window
+  store.go        per-scope engines, dedupe, tenant isolation
+  engine_*.go     stub (default) or cortext_native
+  memory.go       fence, neutralize, formatting
+  metrics.go      fail-open counters
+bench/            live harnesses + VERDICT.md
 ```
 
-## Engines
+## Operational notes
 
-| Build tag | Artifact | Engine | When |
-|---|---|---|---|
-| *(default)* | `bin/cortext-stub.*` | In-process stub (keyword overlap) | Unit tests, ABI wiring, CI without models |
-| `cortext_native` | `bin/cortext.*` | [`github.com/augmem/cortext.go`](https://github.com/augmem/cortext.go) (purego + release natives) | **Production** |
+- Changing `data_dir`, `memory_scope`, engine knobs, or the identity headers
+  disposes open engines; the `previous_response_id` map is process-local and
+  is cleared on material reconfigure and restart. Clients should send an
+  explicit session header after a restart.
+- Every interceptor failure is fail-open: traffic passes through without
+  memory and a counter increments (`open_fail`, `process_fail`, `inject_fail`,
+  `skip_no_identity`, `scope_evict`, `stream_evict`, `stream_conflict`,
+  `chain_fallback`, `consolidate_fail`). Watch the logs.
+- `data_dir` is forced to mode `0700`.
 
-The stub is **not** a substitute for Cortext retrieval quality. Ship
-`build-native` / `install-native` artifacts for real use. CI builds the stub
-as `cortext-stub.*` and the native job as `cortext.*` so basenames cannot be
-confused.
+## Limitations
 
-## Keeping CPA in sync with upstream
-
-This repository does **not** patch CLIProxyAPI. Track upstream with a clean
-clone; only your `config.yaml` and `plugins/cortext.*` are local. No provider
-or translator forks.
-
-## Evaluation
-
-Release-grade evidence (live A/B, blackbox e2e, ABI smoke, review record):
-[`bench/VERDICT.md`](./bench/VERDICT.md). Live run outputs under `bench/**/out/`
-are gitignored (they may embed operator paths); regenerate with the commands
-in VERDICT.md.
-
-## Limits (honest)
-
-- No mid-turn answer revise (proxy has no OpenClaw finalize hook).
-- Session identity is only as good as headers / body fields the client sends.
-  Unkeyed hosts that reuse guessable session ids can still collide under
-  `s-anon-*`; multi-tenant proxies must present distinct API keys. CPA must
-  forward client `Authorization` / `x-api-key` (and session headers) on
-  request, response, and stream intercept metadata — if auth is stripped
-  before the plugin, tenants collapse into unkeyed `s-anon-*` buckets.
-- Compaction is optional outbound windowing, not host-transcript ownership.
-- Native builds use `github.com/augmem/cortext.go`, which downloads release
-  natives + AIST on first open unless `CORTEXT_ASSETS_DIR` or
-  `CORTEXT_LIBRARY_PATH` is set (offline / air-gapped installs need those env
-  vars — see PROVENANCE.md).
+- No mid-turn revise: the interrupt gate can only stage memory for the next
+  request.
+- Session identity is only as good as the headers the client sends. Unkeyed
+  hosts with guessable session ids can collide under `s-anon-*`; multi-tenant
+  proxies must present distinct API keys.
+- `window_messages` is outbound windowing, not transcript compaction on the
+  host. Gemini-family bodies are not windowed (logged once per process).
+- Stream ingest assumes the host sends a stream-init call and whole-line SSE
+  chunks. Both hold for CPA v7.2.96; check before pinning a different version.
+- First native open can download release assets for minutes. It happens at
+  plugin registration in a background goroutine, but the first request for a
+  scope may still wait on a cold install. Pre-provision `CORTEXT_ASSETS_DIR`
+  for cold-start-sensitive deploys.
 - `memory_scope: global` is single-user only.
-- Stream ingest relies on two host contracts: CPA delivers a header-init
-  interceptor call at stream start (used to detect conflicting byte-identical
-  concurrent streams) and delivers SSE chunks containing whole lines (a host
-  that splits a line across chunks would drop that delta). Both hold for
-  CLIProxyAPI v7.2.96; verify before pinning a different host/version.
+- Retrieval quality is the Cortext engine's, not this plugin's. The benches
+  prove plumbing (ingest, recall, isolation, durability), not ranking quality
+  on long real conversations.
 
 ## Related
 
-- [augmem/cortext](https://github.com/augmem/cortext) — native memory engine + release assets
-- [augmem/cortext.go](https://github.com/augmem/cortext.go) — pure-Go binding used by `build-native`
-- [augmem/cortext-openclaw-plugin](https://github.com/augmem/cortext-openclaw-plugin)
-- [augmem/cortext-hermes-plugin](https://github.com/augmem/cortext-hermes-plugin)
+- [augmem/cortext](https://github.com/augmem/cortext) — engine + release assets
+- [augmem/cortext.go](https://github.com/augmem/cortext.go) — Go binding used by `build-native`
 - [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 ## License
