@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master, 'feat/**']
+  pull_request:
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Verify published module graph (no sibling replaces)
+        working-directory: plugin
+        run: |
+          if grep -E '^\s*replace\s+' go.mod; then
+            echo "committed go.mod must not contain replace directives" >&2
+            exit 1
+          fi
+          grep -E 'github.com/augmem/cortext.go|github.com/router-for-me/CLIProxyAPI' go.sum
+      - name: Vet
+        run: make vet
+      - name: Test (stub engine)
+        run: make test
+      - name: Test race (stub engine)
+        run: make test-race
+      - name: Build shared library (stub engine → cortext-stub.*)
+        run: make build-stub
+      - name: Assert stub artifact name (not production basename)
+        run: |
+          test -f bin/cortext-stub.so || test -f bin/cortext-stub.dylib
+          if ls bin/cortext.so bin/cortext.dylib 2>/dev/null; then
+            echo "stub job must not emit production basename cortext.*" >&2
+            exit 1
+          fi
+          # Shared library must embed engine=stub in registration version string path:
+          # verified via unit tests; binary existence is the CI ship gate for stub.
+
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Build shared library (native engine → cortext.*)
+        run: make build-native
+      - name: Assert production artifact basename
+        run: |
+          if [ -f bin/cortext.so ] || [ -f bin/cortext.dylib ]; then
+            echo "native production artifact present"
+          else
+            echo "missing bin/cortext.so or bin/cortext.dylib" >&2
+            ls -la bin/ || true
+            exit 1
+          fi
+      - name: Native unit tests
+        # May download cortext release assets on first open unless cached.
+        run: make test-native

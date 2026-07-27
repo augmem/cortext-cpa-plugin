@@ -1,0 +1,13 @@
+// Optional local overlay for sibling checkouts. Copy to go.work (gitignored)
+// when iterating on cortext.go / CLIProxyAPI without publishing modules:
+//
+//   cp go.work.example go.work
+//
+// The committed plugin/go.mod has no replace directives so clean clones build.
+go 1.26.0
+
+use ./plugin
+
+replace github.com/router-for-me/CLIProxyAPI/v7 => ../cortext-proxy
+
+replace github.com/augmem/cortext.go => ../cortext.go

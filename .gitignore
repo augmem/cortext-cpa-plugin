@@ -1,6 +1,7 @@
 # Build artifacts
 bin/
 dist/
+plugin/plugin
 *.so
 *.dylib
 *.dll
@@ -14,6 +15,9 @@ plugin/vendor/
 *.prof
 coverage.out
 coverage.html
+# Optional monorepo sibling overlay (see go.work.example)
+go.work
+go.work.sum
 
 # Local config / state
 config.yaml
@@ -21,6 +25,17 @@ config.yaml
 *.sqlite-*
 .cortext/
 .DS_Store
+
+# Local MDScript goals / agent scratch (not published with the plugin)
+.mdscripts/
+
+# Live eval outputs (may embed operator home paths; regenerate via VERDICT.md)
+bench/**/out/
+bench/**/gaps_out/
+bench/judge_eval/out/
+bench/e2e_blackbox/out/
+bench/e2e_blackbox/gaps_out/
+
 
 # IDE
 .idea/
@@ -34,3 +49,7 @@ vendor/linux-*/
 vendor/windows-*/
 vendor/models/
 !vendor/README.md
+
+# Python bench caches
+__pycache__/
+*.pyc

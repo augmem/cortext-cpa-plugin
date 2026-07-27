@@ -1,8 +1,16 @@
 package main
 
 import (
+	"errors"
 	"sync"
 )
+
+// errEngineClosed is returned by Engine.ProcessText when the handle was closed
+// by a concurrent LRU eviction, reconfigure, or shutdown. Ingest paths must
+// NOT mark the text as seen on this error — returning a sentinel instead of a
+// silent empty success keeps a closed-engine race from permanently dropping a
+// durable write (the next history resubmit re-ingests it).
+var errEngineClosed = errors.New("cortext: engine closed")
 
 // Retention mirrors the Cortext C API.
 type Retention int

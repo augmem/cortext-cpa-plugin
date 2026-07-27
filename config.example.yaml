@@ -1,10 +1,20 @@
 # Snippet for CLIProxyAPI config.yaml
 #
 # Copy the plugins section into your CLIProxyAPI config (or merge keys).
-# Build and install the shared library first:
-#   make build            # stub engine
-#   make build-native     # real libcortext (needs CORTEXT_ROOT)
-#   make install PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
+# Build and install the PRODUCTION (native) shared library first:
+#   make build-native
+#   make install-native PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
+#
+# Stub (CI/protocol only — keyword overlap, NOT Cortext quality):
+#   make build-stub
+#   make install-stub PLUGINS_DIR=/path/to/CLIProxyAPI/plugins
+#   # installs as cortext-stub.* — does not replace plugins/cortext.*
+#
+# Native builds use github.com/augmem/cortext.go. On first open it downloads
+# release natives + AIST unless you pre-provision:
+#   export CORTEXT_ASSETS_DIR=/path/to/unpacked/cortext-assets-1.2.4
+#   # or CORTEXT_LIBRARY_PATH=/path/to/libcortext.so
+# There is no CORTEXT_ROOT / cgo link step for the binding.
 
 plugins:
   enabled: true
@@ -13,20 +23,37 @@ plugins:
     cortext:
       enabled: true
       # Isolation: session | agent | global
+      #   session — per conversation (header / conversation_id / chain),
+      #             namespaced by API key when present so two tenants cannot
+      #             share memory by colliding on conversation_id.
+      #             Identity-less requests (no session, agent, or API key) do
+      #             not open a durable store.
+      #   agent   — per agent header, also namespaced by API key when present.
+      #   global  — one shared store for every agent and harness (single-user
+      #             setups only; on a multi-tenant proxy it leaks across tenants).
       memory_scope: session
-      # Per-scope SQLite directory
+      # Per-scope SQLite directory (created mode 0700)
       data_dir: "~/.cli-proxy-api/cortext"
-      # Cortext knobs (OpenClaw/Hermes defaults)
+      # Cortext knobs (OpenClaw/Hermes defaults; 0 or negative means "use default")
       focus: 0.45
       sensitivity: 0.5
       stability: 0.5
+      # 0 disables recall/injection entirely; absence keeps the default (12).
       recall_limit: 12
       ingest_assistant: true
-      ingest_reasoning: true
+      # Privacy note: chain-of-thought is persisted to plaintext SQLite only
+      # when you opt in here. Default: false.
+      ingest_reasoning: false
       # Stage mid-stream recall for the *next* request (no mid-turn revise).
       interrupt_gate: true
+      # Consolidate when the engine asks (consolidation_state hint), falling
+      # back to every N durable ingests per scope (+ at shutdown). Attempts
+      # throttled to ≤1 per N/5 writes so a persistent hint can't storm.
       auto_consolidate: true
+      consolidate_every: 25
       # Optional hybrid window: keep last N non-system messages outbound.
+      # Extends left past orphaned tool turns; Gemini-family formats are not
+      # windowed (pass through unchanged).
       window_messages: 0
       session_header: "X-Cortext-Session"
       agent_header: "X-Cortext-Agent"

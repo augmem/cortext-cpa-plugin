@@ -1,31 +1,23 @@
-# Vendored native Cortext runtime
+# Vendored / offline Cortext runtime (optional)
 
-This plugin loads Cortext through the official Go cgo binding
-(`github.com/augmem/cortext/bindings/go` or a local checkout). The binding links
-against a platform `libcortext` built from
-[augmem/cortext](https://github.com/augmem/cortext).
+Production builds use [`github.com/augmem/cortext.go`](https://github.com/augmem/cortext.go),
+which loads platform natives from the [augmem/cortext](https://github.com/augmem/cortext)
+release asset tarball (downloaded on first open).
 
-## Preferred: build from a local cortext checkout
-
-```bash
-# From the cortext repository root:
-cmake --preset ffi-release
-cmake --build --preset ffi-release --target cortext
-
-# Or zig:
-# zig build -Doptimize=ReleaseFast
-```
-
-Then point the plugin build at that tree (see the root `Makefile`):
+## Preferred offline path
 
 ```bash
-export CORTEXT_ROOT=/path/to/cortext
-make build
+# From a cortext.go checkout:
+./scripts/fetch_assets.sh /path/to/assets
+export CORTEXT_ASSETS_DIR=/path/to/assets
+make -C /path/to/cortext-cpa-plugin build-native
 ```
 
-## Optional: drop binaries under vendor/
+Or set `CORTEXT_LIBRARY_PATH` to an explicit `libcortext` shared library.
 
-For offline / Git-clone installs (Hermes-style), place platform artifacts here:
+## Legacy drop-in layout
+
+For Hermes-style Git-clone installs you may still place platform artifacts here:
 
 ```text
 vendor/
@@ -34,10 +26,11 @@ vendor/
   linux-x64/libcortext.so
   linux-arm64/libcortext.so
   windows-x64/cortext.dll
-  models/…                 # encoder assets if required by your build
+  models/…                 # encoder assets if required by your layout
 ```
 
-Checksum and provenance notes belong in a future `PROVENANCE.md` once release
-artifacts are published for this plugin.
+Then point `CORTEXT_LIBRARY_PATH` (and optionally `CORTEXT_AIST_MODEL_PATH`) at
+those files. The plugin never downloads a library itself — `cortext.go` owns
+asset fetch when env overrides are unset.
 
-The plugin never downloads a library at runtime.
+Checksum and provenance notes: root [`PROVENANCE.md`](../PROVENANCE.md).

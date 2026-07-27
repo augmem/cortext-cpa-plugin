@@ -1,3 +1,9 @@
+github.com/augmem/cortext.go v1.2.4 h1:xOw+z7PEvo8xFhCCbBX5GkHW1gp9DcYt2xxuVYc9GW8=
+github.com/augmem/cortext.go v1.2.4/go.mod h1:rlGuQRpvztuCH39Ho+CHB6kqQzn/8D4fauhKTK3rEOY=
+github.com/ebitengine/purego v0.10.2 h1:W809HbnvzAxgdm+aOvlSekrM16wGCdT/e76+9tS7gzE=
+github.com/ebitengine/purego v0.10.2/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
+github.com/router-for-me/CLIProxyAPI/v7 v7.2.96 h1:ovIB1PCbbCBQZIJUY7grT4kTHO9RtElkaXwKLirkj/0=
+github.com/router-for-me/CLIProxyAPI/v7 v7.2.96/go.mod h1:he/Nx8K5RKvpcnedn0dmR8vVgHmetQ3/wutuPibWuRM=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/gjson v1.18.0 h1:FIDeeyB800efLX89e5a8Y0BNH+LOngJyGrIWxG2FKQY=
 github.com/tidwall/gjson v1.18.0/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=

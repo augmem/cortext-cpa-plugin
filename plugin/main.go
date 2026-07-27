@@ -48,6 +48,14 @@ const pluginVersion = "0.1.0"
 var (
 	serviceMu sync.Mutex
 	service   *Service
+	// serviceUp marks that the first configure ran: intercepts before
+	// registration must pass through, not silently activate a default-config
+	// service (which would write memory to an operator-unconfigured data_dir).
+	serviceUp bool
+	// serviceDown marks that shutdown ran: late intercept calls must pass
+	// through, not resurrect a default-config service that silently ignores
+	// the operator's configured data_dir and knobs.
+	serviceDown bool
 )
 
 type envelope struct {
@@ -126,9 +134,13 @@ func cliproxyPluginShutdown() {
 	serviceMu.Lock()
 	defer serviceMu.Unlock()
 	if service != nil {
+		// Held across the close: a concurrent configure must not open scope
+		// files on a fresh Store while this Store's closes are in flight.
+		// Intercepts already pass through on serviceDown.
 		service.Shutdown()
 		service = nil
 	}
+	serviceDown = true
 }
 
 func handleMethod(method string, request []byte) ([]byte, error) {
@@ -163,22 +175,35 @@ func configure(raw []byte) error {
 		return err
 	}
 	serviceMu.Lock()
-	defer serviceMu.Unlock()
+	serviceDown = false
+	serviceUp = true
 	if service == nil {
 		service = NewService(cfg)
-		log.Printf("cortext-cpa-plugin: registered v%s (scope=%s, data_dir=%s)", pluginVersion, cfg.MemoryScope, cfg.DataDir)
+		log.Printf("cortext-cpa-plugin: registered v%s engine=%s (scope=%s, data_dir=%s) %s",
+			pluginVersion, engineFlavor, cfg.MemoryScope, cfg.DataDir, metricsSummaryLine())
 	} else {
 		service.Reconfigure(cfg)
-		log.Printf("cortext-cpa-plugin: reconfigured (scope=%s, enabled=%v)", cfg.MemoryScope, cfg.Enabled)
+		log.Printf("cortext-cpa-plugin: reconfigured v%s engine=%s (scope=%s, enabled=%v) %s",
+			pluginVersion, engineFlavor, cfg.MemoryScope, cfg.Enabled, metricsSummaryLine())
 	}
+	svc := service
+	serviceMu.Unlock()
+	// Prewarm detached: a native first open can download/assemble release
+	// assets for minutes; the register/reconfigure RPC must not block on it.
+	// Failures are best-effort and surface again on first real use. ForScope's
+	// openMu keeps a concurrent first request from doubling the download.
+	go svc.Prewarm()
 	return nil
 }
 
+// currentService returns nil before registration and after shutdown:
+// interceptors then pass traffic through untouched instead of building state
+// with default config the operator never chose.
 func currentService() *Service {
 	serviceMu.Lock()
 	defer serviceMu.Unlock()
-	if service == nil {
-		service = NewService(DefaultConfig())
+	if service == nil || !serviceUp || serviceDown {
+		return nil
 	}
 	return service
 }
@@ -187,8 +212,10 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
+			// Version embeds engine flavor so operators can tell stub vs native
+			// from the registration surface (basename is always cortext for CPA config).
 			Name:             "cortext",
-			Version:          pluginVersion,
+			Version:          pluginVersion + "+" + engineFlavor,
 			Author:           "augmem",
 			GitHubRepository: "https://github.com/augmem/cortext-cpa-plugin",
 			ConfigFields: []pluginapi.ConfigField{
@@ -202,7 +229,8 @@ func pluginRegistration() registration {
 				{Name: "ingest_assistant", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Durable-ingest assistant responses."},
 				{Name: "ingest_reasoning", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Durable-ingest reasoning stream segments."},
 				{Name: "interrupt_gate", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Stage mid-stream recall for the next request."},
-				{Name: "auto_consolidate", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Run consolidate after durable writes."},
+				{Name: "auto_consolidate", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Consolidate on the engine's consolidation_state hint (fallback: durable-write cadence) and at shutdown."},
+				{Name: "consolidate_every", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback cadence: durable ingests per scope between consolidate runs when no hint is emitted (default 25)."},
 				{Name: "window_messages", Type: pluginapi.ConfigFieldTypeInteger, Description: "If >0, keep only the last N non-system messages outbound."},
 				{Name: "session_header", Type: pluginapi.ConfigFieldTypeString, Description: "Request header for session isolation key."},
 				{Name: "agent_header", Type: pluginapi.ConfigFieldTypeString, Description: "Request header for agent isolation key."},
@@ -221,7 +249,10 @@ func interceptRequestBefore(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	return okEnvelope(currentService().HandleRequestBeforeAuth(req))
+	if svc := currentService(); svc != nil {
+		return okEnvelope(svc.HandleRequestBeforeAuth(req))
+	}
+	return okEnvelope(pluginapi.RequestInterceptResponse{})
 }
 
 func interceptRequestAfter(raw []byte) ([]byte, error) {
@@ -229,7 +260,10 @@ func interceptRequestAfter(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	return okEnvelope(currentService().HandleRequestAfterAuth(req))
+	if svc := currentService(); svc != nil {
+		return okEnvelope(svc.HandleRequestAfterAuth(req))
+	}
+	return okEnvelope(pluginapi.RequestInterceptResponse{})
 }
 
 func interceptResponse(raw []byte) ([]byte, error) {
@@ -237,7 +271,10 @@ func interceptResponse(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	return okEnvelope(currentService().HandleResponse(req))
+	if svc := currentService(); svc != nil {
+		return okEnvelope(svc.HandleResponse(req))
+	}
+	return okEnvelope(pluginapi.ResponseInterceptResponse{})
 }
 
 func interceptStreamChunk(raw []byte) ([]byte, error) {
@@ -245,7 +282,10 @@ func interceptStreamChunk(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	return okEnvelope(currentService().HandleStreamChunk(req))
+	if svc := currentService(); svc != nil {
+		return okEnvelope(svc.HandleStreamChunk(req))
+	}
+	return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 }
 
 func okEnvelope(v any) ([]byte, error) {

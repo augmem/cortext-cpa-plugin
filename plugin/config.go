@@ -36,7 +36,8 @@ type PluginConfig struct {
 	Sensitivity float64 `yaml:"sensitivity"`
 	Stability   float64 `yaml:"stability"`
 
-	// RecallLimit caps injected memory lines.
+	// RecallLimit caps injected memory lines (0 disables recall/injection;
+	// absence keeps the default of 12).
 	RecallLimit int `yaml:"recall_limit"`
 
 	// IngestAssistant durable-ingests assistant text from responses/streams.
@@ -49,11 +50,25 @@ type PluginConfig struct {
 	// for the next request (proxy has no mid-turn revise).
 	InterruptGate bool `yaml:"interrupt_gate"`
 
-	// AutoConsolidate runs consolidate() periodically after durable writes.
+	// AutoConsolidate runs consolidate() when the engine asks for it
+	// (consolidation_state hint, cortext ≥1.2.2 — the same stable contract the
+	// reference cortext.ts binding types), falling back to every
+	// ConsolidateEvery durable writes for engines that never emit the hint,
+	// plus once at shutdown/eviction. Attempts are throttled
+	// (≤1 per ConsolidateEvery/5 writes per scope) so a persistent hint
+	// cannot storm the request path. Under default knobs the cadence usually
+	// fires first; the hint is the engine's escalation path.
 	AutoConsolidate bool `yaml:"auto_consolidate"`
 
-	// WindowMessages, when > 0, keeps only the last N non-system messages
-	// on the outbound request after injecting memory (hybrid compaction).
+	// ConsolidateEvery is the fallback cadence: durable ingests per scope
+	// between consolidate() runs when the engine emits no hint. Default: 25.
+	ConsolidateEvery int `yaml:"consolidate_every"`
+
+	// WindowMessages, when > 0, keeps only the last N non-system messages on
+	// the outbound request. Windowing runs BEFORE recall/inject so recall
+	// dedupe compares against what the model will actually see; the kept
+	// window extends left past orphaned tool turns. Gemini-family formats
+	// pass through unwindowed (logged once per process).
 	WindowMessages int `yaml:"window_messages"`
 
 	// SessionHeader is the request header used as the session isolation key.
@@ -76,12 +91,15 @@ func DefaultConfig() PluginConfig {
 		Stability:       0.5,
 		RecallLimit:     12,
 		IngestAssistant: true,
-		IngestReasoning: true,
-		InterruptGate:   true,
-		AutoConsolidate: true,
-		WindowMessages:  0,
-		SessionHeader:   "X-Cortext-Session",
-		AgentHeader:     "X-Cortext-Agent",
+		// CoT is toxic by default: reasoning is not persisted unless the
+		// operator opts in.
+		IngestReasoning:  false,
+		InterruptGate:    true,
+		AutoConsolidate:  true,
+		ConsolidateEvery: 25,
+		WindowMessages:   0,
+		SessionHeader:    "X-Cortext-Session",
+		AgentHeader:      "X-Cortext-Agent",
 	}
 }
 
@@ -117,8 +135,9 @@ func normalizeConfig(cfg PluginConfig) PluginConfig {
 	default:
 		cfg.MemoryScope = ScopeSession
 	}
-	if cfg.RecallLimit <= 0 {
-		cfg.RecallLimit = 12
+	if cfg.RecallLimit < 0 {
+		// 0 disables recall/injection; absence keeps the default (YAML merge).
+		cfg.RecallLimit = 0
 	}
 	if cfg.Focus <= 0 {
 		cfg.Focus = 0.45
@@ -140,6 +159,9 @@ func normalizeConfig(cfg PluginConfig) PluginConfig {
 	}
 	if cfg.WindowMessages < 0 {
 		cfg.WindowMessages = 0
+	}
+	if cfg.ConsolidateEvery <= 0 {
+		cfg.ConsolidateEvery = 25
 	}
 	cfg.DataDir = expandPath(cfg.DataDir)
 	return cfg
